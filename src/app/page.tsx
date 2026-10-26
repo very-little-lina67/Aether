@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useAuth } from "@/context/AuthContext";
 
 type Message = {
   id: string;
@@ -15,25 +18,79 @@ type UploadedFile = {
   type: string;
 };
 
+const WELCOME_MESSAGE: Message = {
+  id: "welcome",
+  role: "assistant",
+  content:
+    "Hey! Ich bin Aether.\n\nSchreib mir einfach was du willst – egal was. Ich setze deine Aufgaben und Befehle um.\n\nDu kannst auch Dateien hochladen und Code ändern lassen.",
+};
+
 export default function Home() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "Hey! Ich bin Aether.\n\nSchreib mir einfach was du willst – egal was. Ich setze deine Aufgaben und Befehle um.\n\nDu kannst auch Dateien hochladen und Code ändern lassen.",
-    },
-  ]);
+  const { user, profile, loading: authLoading, logout, isAdmin } = useAuth();
+  const router = useRouter();
+
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<"chat" | "code">("chat");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [chatLoaded, setChatLoaded] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Redirect if not logged in
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.replace("/login");
+    }
+  }, [user, authLoading, router]);
+
+  // Load chat from localStorage when user is available
+  useEffect(() => {
+    if (!user || chatLoaded) return;
+
+    try {
+      const key = `aether_chat_${user.uid}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Message[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+        }
+      }
+    } catch (e) {
+      console.error("Chat konnte nicht geladen werden", e);
+    }
+    setChatLoaded(true);
+  }, [user, chatLoaded]);
+
+  // Save chat to localStorage whenever messages change
+  useEffect(() => {
+    if (!user || !chatLoaded) return;
+    try {
+      const key = `aether_chat_${user.uid}`;
+      // Don't save only the welcome message
+      if (messages.length === 1 && messages[0].id === "welcome") {
+        localStorage.removeItem(key);
+      } else {
+        localStorage.setItem(key, JSON.stringify(messages));
+      }
+    } catch (e) {
+      console.error("Chat konnte nicht gespeichert werden", e);
+    }
+  }, [messages, user, chatLoaded]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const clearChat = () => {
+    if (!confirm("Gesamten Chat-Verlauf wirklich löschen?")) return;
+    setMessages([WELCOME_MESSAGE]);
+    if (user) {
+      localStorage.removeItem(`aether_chat_${user.uid}`);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -273,6 +330,15 @@ kompletter inhalt
     });
   };
 
+  // Show loading while checking auth
+  if (authLoading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-zinc-400">
+        Laden...
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
       <header className="border-b border-zinc-800 px-4 py-3 flex items-center justify-between bg-zinc-900/80 backdrop-blur sticky top-0 z-10">
@@ -285,23 +351,53 @@ kompletter inhalt
             <p className="text-xs text-zinc-400">Chat • Code • Aufgaben</p>
           </div>
         </div>
-        <div className="flex gap-1.5">
-          <button
-            onClick={() => setMode("chat")}
-            className={`px-3 py-1.5 rounded-full text-sm transition ${
-              mode === "chat" ? "bg-purple-600 text-white" : "bg-zinc-800 text-zinc-300"
-            }`}
-          >
-            Chat
-          </button>
-          <button
-            onClick={() => setMode("code")}
-            className={`px-3 py-1.5 rounded-full text-sm transition ${
-              mode === "code" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-300"
-            }`}
-          >
-            Code
-          </button>
+
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => setMode("chat")}
+              className={`px-3 py-1.5 rounded-full text-sm transition ${
+                mode === "chat" ? "bg-purple-600 text-white" : "bg-zinc-800 text-zinc-300"
+              }`}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => setMode("code")}
+              className={`px-3 py-1.5 rounded-full text-sm transition ${
+                mode === "code" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-300"
+              }`}
+            >
+              Code
+            </button>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 ml-2 pl-2 border-l border-zinc-700">
+            <span className="text-xs text-zinc-400 max-w-[100px] truncate">
+              {profile?.username || user.email}
+            </span>
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="text-xs px-2 py-1 rounded bg-amber-900/50 text-amber-300 hover:bg-amber-900"
+              >
+                Admin
+              </Link>
+            )}
+            <button
+              onClick={clearChat}
+              className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-white"
+              title="Chat löschen"
+            >
+              🗑
+            </button>
+            <button
+              onClick={() => logout().then(() => router.push("/login"))}
+              className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
@@ -316,7 +412,9 @@ kompletter inhalt
                 msg.role === "user" ? "bg-purple-600 text-white" : "bg-zinc-800 text-zinc-100"
               }`}
             >
-              {msg.role === "assistant" ? renderContent(msg.content) : (
+              {msg.role === "assistant" ? (
+                renderContent(msg.content)
+              ) : (
                 <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
               )}
 
@@ -382,25 +480,19 @@ kompletter inhalt
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={
-              mode === "code"
-                ? "Sag was am Code geändert werden soll..."
-                : "Schreib einfach was du willst..."
-            }
+            placeholder="Schreib etwas..."
             rows={1}
-            className="flex-1 resize-none bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 placeholder:text-zinc-500 min-h-[48px]"
+            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none max-h-32"
           />
+
           <button
             onClick={sendMessage}
             disabled={loading || (!input.trim() && uploadedFiles.length === 0)}
-            className="px-5 py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition shrink-0"
+            className="p-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 shrink-0"
           >
-            Senden
+            ➤
           </button>
         </div>
-        <p className="text-center text-xs text-zinc-500 mt-2">
-          Aether • Chat & Code • Dateien hochladen möglich
-        </p>
       </footer>
     </div>
   );
