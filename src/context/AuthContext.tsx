@@ -64,18 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const snap = await getDoc(ref);
     if (snap.exists()) {
       setProfile(snap.data() as UserProfile);
-    } else {
-      // Fallback falls Dokument fehlt
-      const fallback: UserProfile = {
-        uid: u.uid,
-        email: u.email || "",
-        username: u.displayName || "User",
-        role: "user",
-        createdAt: Date.now(),
-      };
-      await setDoc(ref, fallback);
-      setProfile(fallback);
     }
+    // Hinweis: Falls das Dokument noch nicht existiert, wird es parallel 
+    // von register() angelegt. Kein automatisches Überschreiben nötig.
   };
 
   useEffect(() => {
@@ -100,27 +91,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const name = username.trim();
     if (name.length < 2) throw new Error("Benutzername zu kurz");
 
-    // Prüfen ob Username schon vergeben
-    const q = query(collection(db, "users"), where("username", "==", name));
-    const existing = await getDocs(q);
-    if (!existing.empty) throw new Error("Benutzername bereits vergeben");
-
+    // 1. Zuerst Auth-Konto erstellen (dadurch ist request.auth vorhanden und Firestore-Aufrufe sind erlaubt)
     const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
     await updateProfile(cred.user, { displayName: name });
 
-    // Erster User wird Admin, alle weiteren User
-    const allUsers = await getDocs(collection(db, "users"));
-    const role: UserRole = allUsers.empty ? "admin" : "user";
+    try {
+      // 2. Jetzt authentifiziert prüfen, ob der Benutzername bereits von jemand anderem genutzt wird
+      const q = query(collection(db, "users"), where("username", "==", name));
+      const existing = await getDocs(q);
+      const isTakenByOther = existing.docs.some((d) => d.id !== cred.user.uid);
 
-    const profileData: UserProfile = {
-      uid: cred.user.uid,
-      email: email.trim().toLowerCase(),
-      username: name,
-      role,
-      createdAt: Date.now(),
-    };
-    await setDoc(doc(db, "users", cred.user.uid), profileData);
-    setProfile(profileData);
+      if (isTakenByOther) {
+        // Falls vergeben: frisch erstellten Auth-Nutzer aufräumen
+        await cred.user.delete();
+        throw new Error("Benutzername bereits vergeben");
+      }
+
+      // 3. Prüfen, ob es der erste registrierte Nutzer ist (wird Admin)
+      const allUsers = await getDocs(collection(db, "users"));
+      const otherUsers = allUsers.docs.filter((d) => d.id !== cred.user.uid);
+      const role: UserRole = otherUsers.length === 0 ? "admin" : "user";
+
+      // 4. Profil in Firestore anlegen
+      const profileData: UserProfile = {
+        uid: cred.user.uid,
+        email: email.trim().toLowerCase(),
+        username: name,
+        role,
+        createdAt: Date.now(),
+      };
+      await setDoc(doc(db, "users", cred.user.uid), profileData);
+      setProfile(profileData);
+    } catch (err) {
+      // Falls nach dem Auth-Schritt etwas schiefging und der User noch existiert, aufräumen
+      if (auth.currentUser && auth.currentUser.uid === cred.user.uid) {
+        try {
+          await cred.user.delete();
+        } catch {
+          // Ignorieren falls Löschen nicht möglich
+        }
+      }
+      throw err;
+    }
   };
 
   const login = async (email: string, password: string) => {
